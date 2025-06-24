@@ -1,0 +1,60 @@
+class ProteinMutationPredictor(nn.Module):
+    def __init__(self, cnn_channels=64, lstm_hidden=64, attention_heads=4):
+        super().__init__()
+
+        # 1D CNN 提取局部特征
+        self.cnn = nn.Sequential(
+            nn.Conv1d(in_channels=8, out_channels=cnn_channels, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(in_channels=cnn_channels, out_channels=cnn_channels * 2, kernel_size=3, padding=1),
+            nn.ReLU()
+        )
+
+        # BiLSTM 捕捉序列依赖
+        self.lstm = nn.LSTM(
+            input_size=cnn_channels * 2,
+            hidden_size=lstm_hidden,
+            bidirectional=True,
+            batch_first=True
+        )
+
+        # 自注意力机制
+        self.attention = nn.MultiheadAttention(
+            embed_dim=lstm_hidden * 2,
+            num_heads=attention_heads,
+            batch_first=True
+        )
+
+        # 分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(lstm_hidden * 2, 32),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # 输入x形状: [batch_size, seq_len, 8]
+
+        # 1. 转置矩阵以适应Conv1d (通道优先)
+        x = x.permute(0, 2, 1)  # -> [batch, 8, seq_len]
+
+        # 2. CNN处理
+        cnn_features = self.cnn(x)  # -> [batch, cnn_channels*2, seq_len//2]
+        cnn_features = cnn_features.permute(0, 2, 1)  # -> [batch, seq_len//2, cnn_channels*2]
+
+        # 3. LSTM处理
+        lstm_out, _ = self.lstm(cnn_features)  # -> [batch, seq_len//2, lstm_hidden*2]
+
+        # 4. 自注意力
+        attn_out, _ = self.attention(
+            lstm_out, lstm_out, lstm_out  # Q=K=V
+        )  # -> [batch, seq_len//2, lstm_hidden*2]
+
+        # 5. 全局平均池化
+        pooled = attn_out.mean(dim=1)  # -> [batch, lstm_hidden*2]
+
+        # 6. 分类
+        return self.classifier(pooled)  # -> [batch, 1]
